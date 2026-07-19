@@ -13,7 +13,7 @@ write it is a debt you'll pay later with interest.
 - [x] `.gitignore` (Python template + `.env` + `data/`)
 - [x] `.env` with `SOCRATA_APP_TOKEN` (register the token at dev.socrata.com first)
 - [x] `requirements.txt` (requests, tenacity, pandas, PyYAML, python-dotenv, pytest, openpyxl, ruff)
-- [ ] `venv` created, dependencies installed
+- [x] `venv` created, dependencies installed
 - [x] Empty `config/fiscal_year_datasets.yaml` stubbed with the known IDs from the spec:
       current (`pvqr-7yc4`), FY2025 (`m5vz-tzqv`), FY2023 (`869v-vr48`), FY2014 (`jt7v-77mi`)
 

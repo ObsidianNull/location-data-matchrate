@@ -13,5 +13,3 @@ openpyxl    # used for reading and writing Excel files, which can be useful for 
 pytest # used for testing the script, ensuring that the code behaves as expected and helping to catch bugs early in the development process
 
 ruff # used for linting and code quality checks, helping to maintain a clean and consistent codebase by enforcing coding standards and best practices
-
-sqlite3 # used for interacting with SQLite databases, which can be useful for storing and querying data locally without the need for a separate database server
