@@ -1,1 +1,2 @@
-.env
+.env    # ignore environment variable files
+/data
