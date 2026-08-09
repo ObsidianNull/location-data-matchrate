@@ -12,215 +12,206 @@ write it is a debt you'll pay later with interest.
 - [x] Repo structure per the earlier layout (`src/`, `tests/`, `config/`, `data/`)
 - [x] `.gitignore` (Python template + `.env` + `data/`)
 - [x] `.env` with `SOCRATA_APP_TOKEN` (register the token at dev.socrata.com first)
-- [x] `requirements.txt` (requests, tenacity, pandas, PyYAML, python-dotenv, pytest, openpyxl, ruff)
+- [x] `requirements.txt` (requests, tenacity, pandas, PyYAML, python-dotenv, pytest, ruff)
 - [x] `venv` created, dependencies installed
-- [x] Empty `config/fiscal_year_datasets.yaml` stubbed with the known IDs from the spec:
+- [x] `config/fiscal_year_datasets.yaml` stubbed with the known IDs from the spec:
       current (`pvqr-7yc4`), FY2025 (`m5vz-tzqv`), FY2023 (`869v-vr48`), FY2014 (`jt7v-77mi`)
 
 **Exit condition:** `python -c "import requests, tenacity, pandas, yaml, dotenv"` runs clean.
 
 ---
 
-## Phase 1 — `socrata_client.py` (in progress)
+## Phase 1 — `socrata_client.py` (done)
 
 The foundation everything else calls. Nothing above this layer should ever
 construct a raw URL or `requests` call directly.
 
-- [ ] `SocrataClient` class: holds `requests.Session`, base domain, app token
+- [x] `SocrataClient` class: holds `requests.Session`, base domain, app token
       (set once via `X-App-Token` header on the session)
-- [ ] Retry/backoff via `tenacity`, scoped to transient failures only
+- [x] Retry/backoff via `tenacity`, scoped to transient failures only
       (connection errors, timeouts, 429, 5xx) — 400/404 fail immediately, no retry
-- [ ] `IN (...)` clause builder as its own testable function — string values,
-      correctly single-quoted, comma-joined (this is the trickiest part; write
-      the test *before* the implementation)
-- [ ] Chunking function: splits a list of IDs into batches of a configurable size
-      (default ~500), separate and testable independent of any HTTP call
-- [ ] Client-owned pagination: a method that returns/yields the *complete*
-      result set for a query, looping over `$limit`/`$offset` internally
-- [ ] Small delay between batches (configurable, even though app-token requests
-      aren't currently throttled — treat "currently" as provisional)
+- [x] `IN (...)` clause builder as its own testable function — string values,
+      correctly single-quoted, comma-joined
+- [x] Chunking function: splits a list of IDs into batches of a configurable size
+      (default 500), separate and testable independent of any HTTP call
+- [x] Client-owned pagination (`get_all`): loops over `$limit`/`$offset` internally
+- [x] Small configurable delay between batches (`request_delay`, default 0.2s)
 
-**Tests to write now:**
-- `IN` clause builder: leading zeros preserved, correct quoting, empty list edge case
-- Chunking: exact multiples, remainders, chunk size of 1, empty input
-- Retry logic: mock a 500 then success → succeeds; mock a 400 → no retry, raises immediately
-- Pagination: mock two pages then a short page → all rows returned, loop terminates
+**Tests written:** `tests/test_socrata_client.py` — retry-then-succeed on
+500/ConnectionError/Timeout/429, immediate-fail-no-retry on 400/404,
+retry-exhaustion (call count == 5), warning-on-retry, explicit `timeout=30`,
+`IN` clause quoting/escaping/leading-zeros, chunking edge cases, and
+pagination (multi-page loop, short-page termination, inter-page delay).
 
-**Exit condition:** you can call `client.get_all(dataset_id, where_clause)` against
-both `nc67-uf89` and `pvqr-7yc4` in a scratch script and get real rows back,
-including a case that exercises pagination (a query returning >1000 rows) and
-a case that exercises batch chunking (a list of >1000 summons numbers).
+**Exit condition:** met against mocked responses; live-dataset exercise of
+pagination/chunking against real data deferred to Phase 12 (real-data dry run).
 
 ---
 
-## Phase 2 — `config.py`
+## Phase 2 — `config.py` (done)
 
-Small, but unblocks Phase 3 and gives you a template for how every other
-module will load configuration.
+- [x] Load `.env` via `python-dotenv`
+- [x] Load `config/fiscal_year_datasets.yaml` via `PyYAML`
+- [x] `get_dataset_id(fiscal_year, datasets)` lookup ("current" or a known FY key)
+- [x] Fails loudly (`ConfigError`) if `SOCRATA_APP_TOKEN` is missing
 
-- [ ] Load `.env` via `python-dotenv`
-- [ ] Load `config/fiscal_year_datasets.yaml` via `PyYAML`
-- [ ] Expose a simple lookup: given a fiscal year (or "current"), return the
-      dataset ID to query
-- [ ] Fail loudly if `SOCRATA_APP_TOKEN` is missing — don't silently run unauthenticated
-
-**Tests:** lookup returns correct ID for known years; missing/unknown year
-raises a clear error rather than `None` silently propagating downstream.
+**Tests:** `tests/test_config.py` — known-year lookup, unknown-year raises
+`ConfigError` rather than `None`, missing-token raises, real YAML file loads
+correctly.
 
 ---
 
-## Phase 3 — `sampling.py` (pulls from Source A)
+## Phase 3 — `sampling.py` (pulls from Source A) (done)
 
-First real use of the client against live data.
+- [x] `fetch_source_a_sample()`: queries `nc67-uf89` by date range (+ optional
+      plate list) for the fields listed in spec section 2
+- [x] `summons_number` forced to `str` immediately on read
+- [x] Returns a `pandas.DataFrame`
 
-- [ ] Function: given a date range (and/or list of plates), query `nc67-uf89`
-      for the fields listed in spec section 2 (`summons_number`, `plate`,
-      `state`, `issue_date`, `violation`, `precinct`, `county`,
-      `issuing_agency`, `judgment_entry_date`)
-- [ ] Enforce `summons_number` stays a `str` from the moment it's read —
-      never let it pass through anything that could cast it to `int`
-- [ ] Return as a `pandas.DataFrame` (this is the shape everything downstream expects)
-
-**Tests:** with a mocked client response, verify types are right (`summons_number`
-is `str` even if the raw JSON gave you something numeric-looking), date parsing
-is correct, expected columns are present.
-
-**Exit condition:** you can pull a real sample (e.g. last 30 days) and get a
-DataFrame with sane values — this is your first checkpoint that the whole
-plumbing works end to end for one dataset.
+**Tests:** `tests/test_sampling.py` — leading zeros preserved through the str
+cast, correct `$where` date-range and plate-filter construction, expected
+column set.
 
 ---
 
-## Phase 4 — Source B batch fetch
+## Phase 4 — Source B batch fetch (done, lives in `sampling.py`)
 
-Not a new file necessarily — could live in `sampling.py` or a `enrichment.py` —
-but conceptually distinct from Phase 3: given summons numbers from Source A,
-batch-query Source B.
+- [x] `group_summons_numbers_by_dataset()`: buckets sampled summons numbers by
+      which Source B dataset ID applies, using a 365-day recency window and an
+      NYC fiscal-year label (`nyc_fiscal_year_label`, July 1–June 30) for
+      anything older, falling back to `None` (skip, logged) when no historical
+      ID is on file for that FY
+- [x] `fetch_source_b()`: chunks each dataset's summons-number list (Phase 1's
+      chunker), calls `client.get_all` per chunk, tags each row with
+      `source_b_dataset_id` (needed later by canary selection)
+- [x] `merge_source_a_and_b()`: left join on `summons_number`, `issue_date`
+      collision resolved via `issue_date` (Source A) / `issue_date_source_b`
 
-- [ ] Take the sampled `summons_number` list, chunk it (Phase 1's chunker),
-      call `client.get_all` per chunk against the correct dataset ID (Phase 2's
-      config lookup, accounting for tickets old enough to need a historical FY ID)
-- [ ] Collect fields from spec section 2's Source B table
-- [ ] Merge results back into a single DataFrame keyed by `summons_number`
-
-**Tests:** mocked multi-chunk response merges correctly; a summons number with
-no match in any chunk ends up correctly absent/null rather than silently dropped.
-
-**Exit condition:** one DataFrame, one row per sampled ticket, columns from
-both sources, with nulls where Source B had no match.
+**Tests:** multi-chunk/multi-dataset grouping, a summons number missing from
+every chunk stays absent (not silently dropped) and shows up as a null after
+the merge, recent-vs-historical FY dataset selection, unknown-FY tickets
+excluded rather than crashing.
 
 ---
 
-## Phase 5 — `matching.py`
+## Phase 5 — `matching.py` (done)
 
-Pure logic, no I/O — should be some of the most heavily tested code in the project.
-
-- [ ] Match classification (spec 3.2): `unmatched` / `matched_no_address` /
+- [x] `classify_match()`: `unmatched` / `matched_no_address` /
       `matched_street_only` / `matched_house_level`
-- [ ] Precision tier assignment (spec 3.3)
-- [ ] County normalization (`K`/`BK`/`NY`/`MN`/`QN`/`BX`/`Bronx` → one canonical form)
+- [x] `assign_precision_tier()`: house_number → street_code →
+      intersecting_street → precinct (Source A fallback) → county → none
+- [x] `normalize_county()`: borough map per spec, unknown values passed through
+      upper-cased rather than dropped
+- [x] Decision: `None`, `""`, and whitespace-only strings are all treated as
+      blank (`_is_blank()`), applied uniformly everywhere a "present?" check
+      is needed
 
-**Tests:** one test per classification branch, including edge cases (empty
-string vs. null vs. whitespace — decide now whether `""` and `None` are
-treated identically, and write that decision into a test so it can't drift).
-
----
-
-## Phase 6 — `segmentation.py`
-
-- [ ] Ticket-type classification (spec 3.4): officer vs. camera, per
-      `issuing_agency` + `precinct == "000"` check
-- [ ] Age-bucket assignment (spec 3.5): `0–30` / `30–60` / `60–90` / `90+`,
-      computed relative to "today" at run time — take "today" as a parameter,
-      don't call `datetime.now()` inside the function itself, so it stays testable
-
-**Tests:** boundary values (exactly 30 days, exactly 90 days — decide which
-bucket owns the boundary and test it explicitly); agency/precinct combos for
-ticket-type.
+**Tests:** one test per classification branch and per tier, boundary/edge
+cases (empty vs. None vs. whitespace), full `add_match_columns()` integration
+including a real left-join NaN case (not just None).
 
 ---
 
-## Phase 7 — `anomalies.py`
+## Phase 6 — `segmentation.py` (done)
 
-- [ ] Cross-field consistency check (spec 3.6): precinct/county mismatch after
-      normalization
-- [ ] Anomaly flags (spec 3.7): null issue_date in B, issue_date mismatch
-      between A/B, future issue_date in B, precinct/county mismatch
-- [ ] Fiscal-year tag monitoring (spec 3.8): distribution of `fiscal_year`
-      values + max `issue_date` per value
+- [x] `classify_ticket_type()`: DOT or precinct "000" → camera;
+      TRAFFIC/POLICE/SANITATION → officer; anything else → "unknown"
+      (reported, not silently guessed)
+- [x] `assign_age_bucket()`: 0-30 / 30-60 / 60-90 / 90+, takes `today` as a
+      parameter (never calls `datetime.now()` internally)
+- [x] Decision: each bucket owns its lower boundary — exactly 30/60/90 days
+      old falls into the *next* bucket up, tested explicitly
 
-**Tests:** each anomaly type triggers on a crafted bad row and stays silent on
-a clean row; counts aggregate correctly across a small synthetic DataFrame.
-
----
-
-## Phase 8 — `canary.py`
-
-First piece touching persistent state (SQLite) — build and test this in
-isolation from the rest of the pipeline.
-
-- [ ] Schema: canary summons numbers + last-known match status; run-history
-      table (run_id, timestamp, summary stats)
-- [ ] On each run: re-check stored canaries first; if a previously-matching
-      canary now misses, raise a clear signal *before* the rest of the run is trusted
-- [ ] Decide now (you flagged this earlier as a product decision): does a
-      canary failure hard-stop the script, or flag-and-continue? Write that
-      decision down as a comment in the code, not just in your head.
-- [ ] After a successful run, store 3–5 new canary summons numbers + write a
-      row to run-history
-
-**Tests:** fresh DB creates schema correctly; canary check on a healthy DB
-passes; canary check with a rotated/missing summons number produces the
-correct signal (exception, return code, or log — whatever you decided above).
+**Tests:** every boundary value, agency/precinct combinations for ticket
+type, ISO-string issue_date input.
 
 ---
 
-## Phase 9 — `report.py`
+## Phase 7 — `anomalies.py` (done)
 
-- [ ] Build `match_rate_raw.csv` — one row per ticket, exact columns from spec 5a
-- [ ] Build summary aggregates (spec 5b): overall rate, by ticket-type, by
-      age-bucket, precision-tier distribution, mismatch counts, anomaly counts,
-      fiscal-year distribution
-- [ ] Output `match_rate_summary.csv`, or optionally one `.xlsx` workbook with
-      raw + a pivot-table-backed summary sheet (your call, noted as optional
-      earlier — decide based on whether this goes to the founder as a workbook
-      or as separate files)
+- [x] Cross-field consistency check: precinct/county mismatch after
+      normalization, scoped to matched tickets only, blank-on-either-side
+      treated as "can't verify" rather than a mismatch
+- [x] Anomaly flags: null issue_date in B, issue_date mismatch A vs. B,
+      future issue_date in B, precinct/county mismatch — each counted, not
+      discarded, and combined into a semicolon-joined `anomaly_notes` column
+- [x] `fiscal_year_tag_summary()`: distribution of Source B `fiscal_year`
+      values + max issue_date per value (the direct FY-rollover-lag measurement)
 
-**Tests:** given a small synthetic DataFrame with known values, assert the
-summary numbers come out exactly as hand-calculated — this is the module
-where a silent off-by-one would be most embarrassing in front of the founder.
-
----
-
-## Phase 10 — `run.py` (orchestration)
-
-Wires everything above together. Should be short — if it's not, logic has
-leaked into the entrypoint instead of living in its module.
-
-- [ ] Load config → sample from Source A → batch-fetch Source B → match →
-      segment → anomaly-check → canary-check → write reports
-- [ ] Basic CLI args (date range, sample size, output paths) via `argparse`
-      or just constants for v1 — don't over-build this before you need it
-- [ ] Logging (even just `print` or basic `logging` module) at each stage so a
-      failed run tells you *where* it failed
-
-**Exit condition:** one command runs the whole pipeline end to end against
-live data and produces both CSVs (or the workbook) without manual intervention.
+**Tests:** each anomaly type triggers on a crafted bad row and stays silent
+on a clean row; unmatched rows never fire any anomaly even with bad-looking
+underlying data; counts aggregate correctly across a synthetic DataFrame.
 
 ---
 
-## Phase 11 — CI (GitHub Actions)
+## Phase 8 — `canary.py` (done)
 
-Do this once Phase 1–9's tests exist — no point wiring CI before there's
-anything for it to run.
+- [x] SQLite schema: `canaries` (summons_number, dataset_id,
+      last_known_match_status, stored_at) + `run_history` (run_id, timestamp,
+      sample_size, overall_match_rate, summary_json)
+- [x] `check_canaries()`: re-queries every stored canary against its recorded
+      dataset ID *first*; raises `CanaryFailure` naming the summons number and
+      dataset on the first miss
+- [x] **Decision (recorded in code, not just here): a canary failure hard-stops
+      the run.** `run.py` lets `CanaryFailure` propagate and exits non-zero
+      rather than continuing — a rotated dataset ID means nothing else fetched
+      that run can be trusted either.
+- [x] `select_canary_candidates()` + `store_canaries()`: after a successful
+      run, replace the stored set with up to 5 fresh known-matched summons
+      numbers (and the dataset ID each was actually found in)
 
-- [ ] Workflow: install deps, run `ruff`, run `pytest` on push/PR
-- [ ] Hold off on a *scheduled* run-the-pipeline workflow until Phase 10 is
-      solid and you've eyeballed at least one full manual run's output
+**Tests:** fresh DB creates schema correctly; healthy canary check passes and
+queries each canary against its own dataset ID; a missing canary raises
+`CanaryFailure`; store/replace round-trips correctly.
 
 ---
 
-## Phase 12 — Real-data dry run + refinement
+## Phase 9 — `report.py` (done)
+
+- [x] `build_raw_report()` — exact column set/order from spec 5a
+- [x] Summary aggregates (spec 5b): overall rate, by ticket-type, by
+      age-bucket, precision-tier distribution (among matched), mismatch
+      counts (among matched), anomaly counts (% of full sample), fiscal-year
+      distribution + max issue_date
+- [x] **Decision: two flat CSVs, not one `.xlsx` workbook.** CSVs are simpler
+      to generate correctly and far easier to unit-test exactly than an
+      openpyxl pivot table; they open fine in Excel/Sheets for the founder
+      conversation with no real workbook-only feature needed. Summary sections
+      are written into one `match_rate_summary.csv` with `# Section Title`
+      header rows in place of separate sheets.
+
+**Tests:** every summary number in `tests/test_report.py` is asserted against
+a hand-calculated value on a small synthetic DataFrame; an end-to-end
+`write_reports()` test confirms both files are created with the right shape.
+
+---
+
+## Phase 10 — `run.py` (orchestration) (done)
+
+- [x] Load config → **check canaries first** (hard stop on failure) → sample
+      Source A → batch-fetch Source B → merge → match → segment →
+      anomaly-check → write reports → refresh canaries + record run history
+- [x] CLI via `argparse`: `--start-date`/`--end-date` (required),
+      `--sample-size`, `--chunk-size`, `--raw-output`, `--summary-output`,
+      `--db-path`, `--skip-canary-check`
+- [x] Logging at each stage (`logging`, INFO level) so a failed run shows
+      where it failed; `CanaryFailure` → exit code 2, other exceptions → 1
+
+**Exit condition:** `python run.py --help` runs clean and all modules import
+without error. Full live run against real data is Phase 12.
+
+---
+
+## Phase 11 — CI (GitHub Actions) (done)
+
+- [x] `.github/workflows/ci.yml`: install deps, `ruff check .`, `pytest -q`
+      on push/PR
+- [x] No scheduled pipeline-run workflow yet, per plan — holding off until
+      Phase 12 is done and a full manual run's output has been eyeballed
+
+---
+
+## Phase 12 — Real-data dry run + refinement (not started)
 
 - [ ] Run against a real sample spanning multiple age buckets (needs some
       tickets >90 days old to exercise the historical-FY-ID path from Phase 4)
@@ -229,6 +220,11 @@ anything for it to run.
       nulled `issue_date`, fiscal-year rollover behavior — since these are
       exactly the failure modes the script exists to catch, not edge cases to
       wave away if they show up
+
+This is the one phase that needs a live `SOCRATA_APP_TOKEN` and network
+access and hasn't been run yet — everything through Phase 11 has been
+validated against mocked responses and synthetic data only (148 tests,
+`ruff check .` clean).
 
 ---
 
