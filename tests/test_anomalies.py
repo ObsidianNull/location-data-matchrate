@@ -204,6 +204,24 @@ def test_add_anomaly_columns_preserves_row_count_and_order():
     assert list(result["summons_number"]) == ["1", "2", "3"]
 
 
+def test_add_anomaly_columns_empty_dataframe_still_has_all_columns():
+    # A zero-row sample (e.g. no tickets in the queried date range) must not
+    # crash downstream report building for lack of these columns.
+    df = pd.DataFrame([_row("1")]).iloc[0:0]
+    result = add_anomaly_columns(df, TODAY)
+
+    assert len(result) == 0
+    for col in [
+        "anomaly_null_issue_date_source_b",
+        "anomaly_future_issue_date_source_b",
+        "issue_date_mismatch_flag",
+        "precinct_mismatch_flag",
+        "county_mismatch_flag",
+        "anomaly_notes",
+    ]:
+        assert col in result.columns
+
+
 # ---------------------------------------------------------------------------
 # fiscal_year_tag_summary
 # ---------------------------------------------------------------------------

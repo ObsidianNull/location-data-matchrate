@@ -211,20 +211,60 @@ without error. Full live run against real data is Phase 12.
 
 ---
 
-## Phase 12 — Real-data dry run + refinement (not started)
+## Phase 12 — Real-data dry run + refinement (done)
 
-- [ ] Run against a real sample spanning multiple age buckets (needs some
-      tickets >90 days old to exercise the historical-FY-ID path from Phase 4)
-- [ ] Sanity-check the summary numbers by hand against a handful of raw rows
-- [ ] Revisit anything the spec flagged as a live risk during this run —
-      nulled `issue_date`, fiscal-year rollover behavior — since these are
-      exactly the failure modes the script exists to catch, not edge cases to
-      wave away if they show up
+- [x] Ran against a real Source A sample spanning all four age buckets
+      (2026-03-01 to 2026-08-08, sample-size 160, one query/day so the cap
+      doesn't concentrate in a single date)
+- [x] Ran a second, separate historical sample (2023-02-01 to 2023-02-10)
+      to exercise the FY2023 historical-dataset path (`869v-vr48`)
+- [x] Sanity-checked summary numbers against raw rows by hand (age-bucket
+      match rates, precision-tier counts, issue_date alignment between A/B)
+- [x] Ran a third time to confirm canary re-check works against a
+      previously-stored canary set ("All 5 canaries checked out")
 
-This is the one phase that needs a live `SOCRATA_APP_TOKEN` and network
-access and hasn't been run yet — everything through Phase 11 has been
-validated against mocked responses and synthetic data only (148 tests,
-`ruff check .` clean).
+**Real bugs/mismatches this run caught, all fixed:**
+
+- `add_anomaly_columns` silently dropped its flag columns on a 0-row
+  DataFrame (`df.apply(axis=1)` never invokes the row function when there
+  are no rows, so pandas can't infer the result columns) — crashed
+  `report.py` on an empty sample. Now handled explicitly.
+- Source A's `issue_date` is `text`, formatted MM/DD/YYYY — not the
+  floating-timestamp column the spec assumed. The original ISO `between`
+  query silently matched **zero rows** instead of erroring. Rewritten to
+  query `issue_date in (...)` against MM/DD/YYYY-formatted dates, and every
+  fetched value is normalized to ISO immediately so nothing downstream has
+  to know about this.
+- A capped `--sample-size` over a wide date range, queried as one big
+  multi-day batch, came back **300/300 from a single date** — every age
+  bucket but "90+" was empty, defeating the tool's core purpose. Fixed by
+  querying one day at a time with an even per-day quota when a limit is set.
+- Real `issuing_agency` values are full names (`DEPARTMENT OF
+  TRANSPORTATION`, `POLICE DEPARTMENT`, `DEPARTMENT OF SANITATION`) — the
+  spec's short codes (DOT/TRAFFIC/POLICE/SANITATION) mostly don't appear in
+  the live data at all. `classify_ticket_type` now matches both forms.
+- Real county/borough codes go well beyond the spec's base map — `ST`/`R`/
+  `Rich` for Staten Island, `Q`/`Qns`/`QNS`/`QUEEN` for Queens, `Kings`/
+  `BROOK` for Brooklyn, `Manha` for Manhattan all showed up live.
+  `BOROUGH_MAP` expanded accordingly.
+- Source B's `street_code1/2/3` use `"0"` as a "no code assigned"
+  placeholder, not a real street code (confirmed: every live
+  `street_code1=="0"` row with no house_number had a genuine
+  `intersecting_street` instead) — `assign_precision_tier` was crediting
+  these as `street_code` tier. Fixed to treat `"0"` as unset.
+- The historical FY2023 dataset (`869v-vr48`) has **no `fiscal_year`
+  column at all** — a fixed `$select` field list 400'd against it.
+  `fetch_source_b` no longer sends `$select`; missing columns just come
+  back null via DataFrame reindexing instead of erroring the batch.
+- `get_all()` didn't actually bound a query when `max_rows`/`limit` was
+  set narrower than the full result — it pulled everything and truncated
+  client-side. Added real query-level bounding.
+
+173 tests, `ruff check .` clean, three successful live runs producing a
+real, interpretable result: match rate climbs from 0% (0-30 days old) to
+~77% (60-90 days) to 100% (90+ days) in the recent sample — a genuine,
+evidence-based measurement of Source B ingestion lag, which is exactly what
+this tool was built to produce.
 
 ---
 

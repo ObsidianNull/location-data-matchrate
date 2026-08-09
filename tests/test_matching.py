@@ -85,6 +85,20 @@ def test_tier_intersecting_street_when_no_house_or_code():
     assert assign_precision_tier(None, None, None, None, "CROSS ST", "019", "NY") == TIER_INTERSECTING_STREET
 
 
+def test_tier_street_code_of_zero_treated_as_unset_not_a_real_code():
+    # "0" is Source B's placeholder for "no street code assigned," not a
+    # real NYC street code (confirmed against live data) — must fall
+    # through to intersecting_street, not be credited as street_code.
+    assert (
+        assign_precision_tier(None, "0", "0", "0", "CROSS ST", "019", "NY")
+        == TIER_INTERSECTING_STREET
+    )
+
+
+def test_tier_street_code_of_zero_falls_through_to_precinct_when_no_intersecting_street():
+    assert assign_precision_tier(None, "0", "0", "0", None, "019", "NY") == TIER_PRECINCT
+
+
 def test_tier_precinct_fallback():
     assert assign_precision_tier(None, None, None, None, None, "019", "NY") == TIER_PRECINCT
 
@@ -111,13 +125,21 @@ def test_tier_treats_empty_string_same_as_none():
     [
         ("K", "BROOKLYN"),
         ("BK", "BROOKLYN"),
+        ("Kings", "BROOKLYN"),
+        ("BROOK", "BROOKLYN"),
         ("NY", "MANHATTAN"),
         ("MN", "MANHATTAN"),
+        ("Manha", "MANHATTAN"),
+        ("Q", "QUEENS"),
         ("QN", "QUEENS"),
+        ("Qns", "QUEENS"),
+        ("QUEEN", "QUEENS"),
         ("BX", "BRONX"),
         ("Bronx", "BRONX"),
         ("bronx", "BRONX"),
         ("R", "STATEN ISLAND"),
+        ("ST", "STATEN ISLAND"),
+        ("Rich", "STATEN ISLAND"),
         ("  bk  ", "BROOKLYN"),
     ],
 )

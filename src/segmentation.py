@@ -8,8 +8,21 @@ from datetime import date, datetime
 
 import pandas as pd
 
-CAMERA_AGENCY = "DOT"
-OFFICER_AGENCIES = {"TRAFFIC", "POLICE", "SANITATION"}
+# Source A's issuing_agency values are the full agency names, not the short
+# codes the spec used as shorthand (DOT/TRAFFIC/POLICE/SANITATION) —
+# confirmed against the live nc67-uf89 dataset during the Phase 12 dry run,
+# where "DOT" never appears at all and the real values are "DEPARTMENT OF
+# TRANSPORTATION", "POLICE DEPARTMENT", "DEPARTMENT OF SANITATION". Both
+# forms are matched here in case a differently-sourced feed ever uses the
+# short codes.
+CAMERA_AGENCIES = {"DOT", "DEPARTMENT OF TRANSPORTATION"}
+OFFICER_AGENCIES = {
+    "TRAFFIC",
+    "POLICE",
+    "POLICE DEPARTMENT",
+    "SANITATION",
+    "DEPARTMENT OF SANITATION",
+}
 CAMERA_PRECINCT = "000"
 
 TYPE_CAMERA = "camera"
@@ -22,14 +35,16 @@ def classify_ticket_type(issuing_agency, precinct) -> str:
 
     A DOT-issued ticket, or any ticket recorded against precinct "000" (how
     camera enforcement shows up in Source A, since cameras aren't precinct-
-    dispatched), counts as camera — whichever signal fires first. Anything
-    matching TRAFFIC/POLICE/SANITATION is officer; anything neither signal
-    recognizes is reported as "unknown" rather than guessed at.
+    dispatched), counts as camera — whichever signal fires first. A
+    recognized officer agency (TRAFFIC/POLICE/SANITATION, by whichever name
+    the feed uses) is officer; anything neither signal recognizes — transit
+    police, parks department, other agencies present in the real data — is
+    reported as "unknown" rather than guessed at.
     """
     agency = (issuing_agency or "").strip().upper()
     precinct_str = (precinct or "").strip()
 
-    if agency == CAMERA_AGENCY or precinct_str == CAMERA_PRECINCT:
+    if agency in CAMERA_AGENCIES or precinct_str == CAMERA_PRECINCT:
         return TYPE_CAMERA
     if agency in OFFICER_AGENCIES:
         return TYPE_OFFICER

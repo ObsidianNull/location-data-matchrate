@@ -234,6 +234,46 @@ def test_get_all_empty_result(client):
     mock_request.assert_called_once()
 
 
+def test_get_all_max_rows_stops_early_even_with_full_pages_remaining(client):
+    """max_rows must bound the query itself, not just truncate the result —
+    if the server has more matching rows than max_rows, get_all should never
+    even ask for them.
+    """
+    page_size = 10
+    first_page = [{"summons_number": str(i)} for i in range(10)]
+
+    with patch.object(client, "_request", return_value=first_page) as mock_request:
+        result = client.get_all("nc67-uf89", {}, page_size=page_size, max_rows=10)
+
+    assert result == first_page
+    mock_request.assert_called_once()  # never asked for a second page
+
+
+def test_get_all_max_rows_shrinks_final_page_limit(client):
+    page1 = [{"summons_number": str(i)} for i in range(5)]
+    page2 = [{"summons_number": str(i)} for i in range(5, 8)]
+
+    with patch.object(
+        client, "_request", side_effect=[page1, page2]
+    ) as mock_request, patch("src.socrata_client.time.sleep", return_value=None):
+        result = client.get_all("nc67-uf89", {}, page_size=5, max_rows=8)
+
+    assert len(result) == 8
+    assert mock_request.call_count == 2
+    second_call_params = mock_request.call_args_list[1].args[1]
+    assert second_call_params["$limit"] == 3  # only 3 more needed to hit max_rows
+
+
+def test_get_all_max_rows_larger_than_result_returns_everything(client):
+    page = [{"summons_number": "1"}]
+
+    with patch.object(client, "_request", return_value=page) as mock_request:
+        result = client.get_all("nc67-uf89", {}, page_size=1000, max_rows=500)
+
+    assert result == page
+    mock_request.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # build_in_clause
 # ---------------------------------------------------------------------------

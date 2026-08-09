@@ -6,15 +6,29 @@ already in memory, so it's cheap to test exhaustively.
 
 import pandas as pd
 
+# The spec's base map (K/BK -> BROOKLYN, NY/MN -> MANHATTAN, QN -> QUEENS,
+# BX/BRONX -> BRONX, R -> STATEN ISLAND) covers the documented codes, but
+# live-profiling both datasets' county/violation_county columns during the
+# Phase 12 dry run turned up several more real variants NYC actually uses
+# (truncations, alternate abbreviations, mixed case) — added here rather
+# than left to fall through as unmapped/unresolved.
 BOROUGH_MAP = {
     "K": "BROOKLYN",
     "BK": "BROOKLYN",
+    "KINGS": "BROOKLYN",
+    "BROOK": "BROOKLYN",
     "NY": "MANHATTAN",
     "MN": "MANHATTAN",
+    "MANHA": "MANHATTAN",
+    "Q": "QUEENS",
     "QN": "QUEENS",
+    "QNS": "QUEENS",
+    "QUEEN": "QUEENS",
     "BX": "BRONX",
     "BRONX": "BRONX",
     "R": "STATEN ISLAND",
+    "ST": "STATEN ISLAND",
+    "RICH": "STATEN ISLAND",
 }
 
 MATCH_UNMATCHED = "unmatched"
@@ -44,12 +58,11 @@ def _is_blank(value) -> bool:
 
 
 def normalize_county(value) -> str | None:
-    """Map inconsistent county/borough codes to one canonical borough name.
-
-    K/BK -> BROOKLYN, NY/MN -> MANHATTAN, QN -> QUEENS, BX/BRONX -> BRONX,
-    R -> STATEN ISLAND. Anything else is upper-cased and passed through
-    rather than dropped, since Source A/B may contain values outside this
-    known set that are still worth comparing as-is.
+    """Map inconsistent county/borough codes to one canonical borough name —
+    see BOROUGH_MAP for the full known set. Anything else is upper-cased and
+    passed through rather than dropped, since Source A/B contain genuinely
+    unresolvable garbage values (bare precinct numbers, typos) that are
+    still worth comparing as-is rather than silently discarding.
     """
     if _is_blank(value):
         return None
@@ -72,6 +85,17 @@ def classify_match(matched: bool, house_number, street_name) -> str:
     return MATCH_HOUSE_LEVEL
 
 
+def _is_unset_street_code(value) -> bool:
+    """Source B's street_code1/2/3 use "0" as a placeholder for "no code
+    assigned," not a real NYC street code — confirmed against live data
+    during the Phase 12 dry run: every street_code1=="0" row with no
+    house_number in a real sample had a genuine intersecting_street value
+    instead, and NYC's street-code registry doesn't start at 0. Treated as
+    blank so it doesn't inflate the street_code precision-tier count.
+    """
+    return _is_blank(value) or str(value).strip() == "0"
+
+
 def assign_precision_tier(
     house_number,
     street_code1,
@@ -87,7 +111,11 @@ def assign_precision_tier(
     """
     if not _is_blank(house_number):
         return TIER_HOUSE_NUMBER
-    if not _is_blank(street_code1) or not _is_blank(street_code2) or not _is_blank(street_code3):
+    if (
+        not _is_unset_street_code(street_code1)
+        or not _is_unset_street_code(street_code2)
+        or not _is_unset_street_code(street_code3)
+    ):
         return TIER_STREET_CODE
     if not _is_blank(intersecting_street):
         return TIER_INTERSECTING_STREET

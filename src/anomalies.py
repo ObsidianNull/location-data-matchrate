@@ -29,6 +29,14 @@ ALL_ANOMALY_TYPES = [
     ANOMALY_COUNTY_MISMATCH,
 ]
 
+ANOMALY_FLAG_COLUMNS = [
+    "anomaly_null_issue_date_source_b",
+    "anomaly_future_issue_date_source_b",
+    "issue_date_mismatch_flag",
+    "precinct_mismatch_flag",
+    "county_mismatch_flag",
+]
+
 
 def _is_blank(value) -> bool:
     if value is None:
@@ -134,6 +142,17 @@ def add_anomaly_columns(matched_df: pd.DataFrame, today: date) -> pd.DataFrame:
     output of matching.add_match_columns).
     """
     df = matched_df.copy()
+
+    if df.empty:
+        # df.apply(axis=1) never calls the row function on an empty frame,
+        # so pandas can't infer the result columns and silently returns
+        # none of them — declare them explicitly instead of relying on
+        # inference here.
+        for col in ANOMALY_FLAG_COLUMNS:
+            df[col] = pd.Series(dtype=bool)
+        df["anomaly_notes"] = pd.Series(dtype=str)
+        return df
+
     flags = df.apply(lambda row: _row_anomaly_flags(row, today), axis=1, result_type="expand")
     return pd.concat([df, flags], axis=1)
 

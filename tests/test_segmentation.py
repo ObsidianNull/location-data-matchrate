@@ -22,11 +22,20 @@ def test_dot_agency_is_camera():
     assert classify_ticket_type("DOT", "019") == TYPE_CAMERA
 
 
+def test_department_of_transportation_is_camera():
+    # The real value in nc67-uf89 — "DOT" never actually appears in the
+    # live dataset, confirmed during the Phase 12 dry run.
+    assert classify_ticket_type("DEPARTMENT OF TRANSPORTATION", "019") == TYPE_CAMERA
+
+
 def test_precinct_000_is_camera_regardless_of_agency():
     assert classify_ticket_type("TRAFFIC", "000") == TYPE_CAMERA
 
 
-@pytest.mark.parametrize("agency", ["TRAFFIC", "POLICE", "SANITATION"])
+@pytest.mark.parametrize(
+    "agency",
+    ["TRAFFIC", "POLICE", "SANITATION", "POLICE DEPARTMENT", "DEPARTMENT OF SANITATION"],
+)
 def test_known_officer_agencies(agency):
     assert classify_ticket_type(agency, "019") == TYPE_OFFICER
 
@@ -34,10 +43,12 @@ def test_known_officer_agencies(agency):
 def test_lowercase_and_whitespace_agency_normalized():
     assert classify_ticket_type(" dot ", "019") == TYPE_CAMERA
     assert classify_ticket_type(" traffic ", "019") == TYPE_OFFICER
+    assert classify_ticket_type(" department of transportation ", "019") == TYPE_CAMERA
 
 
 def test_unrecognized_agency_and_non_000_precinct_is_unknown():
-    assert classify_ticket_type("PARKS", "019") == TYPE_UNKNOWN
+    assert classify_ticket_type("PARKS DEPARTMENT", "019") == TYPE_UNKNOWN
+    assert classify_ticket_type("TRANSIT AUTHORITY", "019") == TYPE_UNKNOWN
 
 
 def test_none_agency_and_none_precinct_is_unknown():

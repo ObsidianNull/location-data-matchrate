@@ -107,30 +107,46 @@ class SocrataClient:
         dataset_id: str,
         params: dict | None = None,
         page_size: int = DEFAULT_PAGE_SIZE,
+        max_rows: int | None = None,
     ) -> list[dict]:
-        """Return the complete result set for a query.
+        """Return the result set for a query, paginating internally.
 
-        Loops over $limit/$offset internally until a page comes back shorter
-        than page_size. Callers never think about offsets — this handles
-        both an unbounded Source A date-range query and a Source B batch
-        query that's normally under one page, uniformly.
+        Loops over $limit/$offset until a page comes back shorter than the
+        requested page size. Callers never think about offsets — this
+        handles both an unbounded Source A date-range query and a Source B
+        batch query that's normally under one page, uniformly.
+
+        `max_rows`, if given, stops pagination (and shrinks the final
+        page's $limit) once that many rows have been fetched, so a caller
+        asking for a bounded sample never pulls more than it asked for —
+        this is the "never pull the whole table" guarantee, enforced here
+        rather than by truncating a full pull after the fact.
         """
         base_params = dict(params or {})
         all_rows: list[dict] = []
         offset = 0
 
         while True:
+            effective_page_size = page_size
+            if max_rows is not None:
+                remaining = max_rows - len(all_rows)
+                if remaining <= 0:
+                    break
+                effective_page_size = min(page_size, remaining)
+
             page_params = dict(base_params)
-            page_params["$limit"] = page_size
+            page_params["$limit"] = effective_page_size
             page_params["$offset"] = offset
 
             page = self._request(dataset_id, page_params)
             all_rows.extend(page)
 
-            if len(page) < page_size:
+            if len(page) < effective_page_size:
+                break
+            if max_rows is not None and len(all_rows) >= max_rows:
                 break
 
-            offset += page_size
+            offset += effective_page_size
             if self.request_delay:
                 time.sleep(self.request_delay)
 

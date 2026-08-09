@@ -5,7 +5,7 @@ Issued) rows for those same summons numbers.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -49,39 +49,98 @@ SOURCE_B_FIELDS = [
 RECENT_TICKET_WINDOW_DAYS = 365
 
 
+SOURCE_A_DATE_CHUNK_SIZE = 100
+
+
+def _mmddyyyy(d: date) -> str:
+    """nc67-uf89's issue_date column is `text` on Socrata's side, formatted
+    MM/DD/YYYY (confirmed against the live dataset — it is NOT a
+    floating_timestamp, so ISO date literals in a $where clause silently
+    match zero rows instead of erroring). Every query against it has to
+    speak this format.
+    """
+    return d.strftime("%m/%d/%Y")
+
+
+def _date_range_inclusive(start_date: date, end_date: date) -> list[date]:
+    num_days = (end_date - start_date).days
+    return [start_date + timedelta(days=i) for i in range(num_days + 1)]
+
+
+def parse_source_a_issue_date(raw_value) -> str | None:
+    """Parse Source A's MM/DD/YYYY text issue_date into an ISO date string
+    (YYYY-MM-DD), so every downstream consumer can keep assuming ISO dates
+    without knowing about this source's on-disk format.
+    """
+    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip() == ""):
+        return None
+    parsed = datetime.strptime(str(raw_value).strip(), "%m/%d/%Y").date()
+    return parsed.isoformat()
+
+
 def fetch_source_a_sample(
     client: SocrataClient,
     start_date: date,
     end_date: date,
     plates: list[str] | None = None,
     limit: int | None = None,
+    date_chunk_size: int = SOURCE_A_DATE_CHUNK_SIZE,
 ) -> pd.DataFrame:
     """Pull a sample of tickets from Source A over [start_date, end_date],
     optionally narrowed to a list of plates.
 
+    Since issue_date is text (MM/DD/YYYY) rather than a real timestamp
+    column, a date *range* can't be expressed with `between` — instead this
+    enumerates every date in the range and queries `issue_date in (...)`.
+
     `summons_number` is cast to `str` immediately on read — before it ever
     touches pandas — so leading zeros can never be silently lost to an int
-    cast further down the pipeline.
+    cast further down the pipeline. `issue_date` is normalized from
+    MM/DD/YYYY to an ISO date string for the same reason: so every
+    downstream module can assume one consistent format.
     """
-    where_parts = [
-        f"issue_date between '{start_date.isoformat()}T00:00:00' "
-        f"and '{end_date.isoformat()}T23:59:59'"
-    ]
-    if plates:
-        where_parts.append(f"plate in ({build_in_clause(plates)})")
+    all_dates = _date_range_inclusive(start_date, end_date)
 
-    params = {"$select": ",".join(SOURCE_A_FIELDS), "$where": " AND ".join(where_parts)}
+    if limit is None:
+        # No cap: batch several days per request (chunked so a wide range
+        # doesn't blow past URL length limits) — every date is fetched in
+        # full, so there's no risk of skew toward whichever date happens to
+        # come back first.
+        date_strings = [_mmddyyyy(d) for d in all_dates]
+        all_rows: list[dict] = []
+        for date_chunk in chunk_ids(date_strings, chunk_size=date_chunk_size):
+            where_parts = [f"issue_date in ({build_in_clause(date_chunk)})"]
+            if plates:
+                where_parts.append(f"plate in ({build_in_clause(plates)})")
+            params = {"$select": ",".join(SOURCE_A_FIELDS), "$where": " AND ".join(where_parts)}
+            all_rows.extend(client.get_all(SOURCE_A_DATASET_ID, params))
+    else:
+        # Capped: a single multi-day query filled entirely by whichever
+        # date Socrata happens to return first would silently produce a
+        # sample concentrated in one age bucket — useless for the lag
+        # measurement this tool exists to produce (confirmed live: a
+        # 300-cap over a 160-day range came back 300/300 from a single
+        # day). Instead, spread the cap evenly across days, querying one
+        # day at a time with its own small share of the total.
+        rows_per_day = max(1, -(-limit // len(all_dates)))  # ceil division
+        all_rows = []
+        for d in all_dates:
+            if len(all_rows) >= limit:
+                break
+            where_parts = [f"issue_date in ({build_in_clause([_mmddyyyy(d)])})"]
+            if plates:
+                where_parts.append(f"plate in ({build_in_clause(plates)})")
+            params = {"$select": ",".join(SOURCE_A_FIELDS), "$where": " AND ".join(where_parts)}
+            day_cap = min(rows_per_day, limit - len(all_rows))
+            all_rows.extend(client.get_all(SOURCE_A_DATASET_ID, params, max_rows=day_cap))
 
-    rows = client.get_all(SOURCE_A_DATASET_ID, params)
     logger.info(
-        "Fetched %d tickets from Source A (%s to %s)", len(rows), start_date, end_date
+        "Fetched %d tickets from Source A (%s to %s)", len(all_rows), start_date, end_date
     )
 
-    df = pd.DataFrame(rows, columns=SOURCE_A_FIELDS)
+    df = pd.DataFrame(all_rows, columns=SOURCE_A_FIELDS)
     df["summons_number"] = df["summons_number"].astype(str)
-
-    if limit is not None:
-        df = df.head(limit).reset_index(drop=True)
+    df["issue_date"] = df["issue_date"].apply(parse_source_a_issue_date)
 
     return df
 
@@ -170,13 +229,21 @@ def fetch_source_b(
     Each row is tagged with `source_b_dataset_id` — which dataset ID it was
     actually found in — so a later step (canary selection) knows which
     dataset to re-query for that specific summons number.
+
+    No `$select` here, deliberately: historical FY dataset IDs don't
+    necessarily share the current dataset's schema — confirmed live, the
+    FY2023 ID has no `fiscal_year` column at all (that field was added in a
+    later schema change per the spec's own data-quality warning), so a
+    fixed field list would 400 against it. Fetching every column and
+    reindexing onto SOURCE_B_FIELDS afterward means a genuinely absent
+    column just comes back null instead of erroring the whole batch.
     """
     all_rows: list[dict] = []
 
     for dataset_id, summons_numbers in summons_numbers_by_dataset.items():
         for chunk in chunk_ids(summons_numbers, chunk_size=chunk_size):
             where_clause = f"summons_number in ({build_in_clause(chunk)})"
-            params = {"$select": ",".join(SOURCE_B_FIELDS), "$where": where_clause}
+            params = {"$where": where_clause}
             rows = client.get_all(dataset_id, params)
             for row in rows:
                 row["source_b_dataset_id"] = dataset_id
