@@ -41,8 +41,8 @@ def classify_ticket_type(issuing_agency, precinct) -> str:
     police, parks department, other agencies present in the real data — is
     reported as "unknown" rather than guessed at.
     """
-    agency = (issuing_agency or "").strip().upper()
-    precinct_str = (precinct or "").strip()
+    agency = ("" if pd.isna(issuing_agency) else str(issuing_agency)).strip().upper()
+    precinct_str = ("" if pd.isna(precinct) else str(precinct)).strip()
 
     if agency in CAMERA_AGENCIES or precinct_str == CAMERA_PRECINCT:
         return TYPE_CAMERA

@@ -55,6 +55,13 @@ def test_none_agency_and_none_precinct_is_unknown():
     assert classify_ticket_type(None, None) == TYPE_UNKNOWN
 
 
+def test_nan_agency_and_nan_precinct_is_unknown():
+    # A missing value read back from a pandas DataFrame column is NaN
+    # (a float), not None — the real shape a missing issuing_agency/precinct
+    # takes once Source A rows are loaded into a DataFrame.
+    assert classify_ticket_type(float("nan"), float("nan")) == TYPE_UNKNOWN
+
+
 # ---------------------------------------------------------------------------
 # assign_age_bucket
 # ---------------------------------------------------------------------------
